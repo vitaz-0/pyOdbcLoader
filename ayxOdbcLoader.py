@@ -11,6 +11,8 @@ TGT_AUTOCOMMIT = False
 
 SERVER_NAME = 'localhost'
 
+BATCH_SIZE = 2
+
 def init_cursor(constr, autocommit):
     try:
         conn = pyodbc.connect(constr,autocommit=autocommit)
@@ -27,16 +29,16 @@ def init_cursor(constr, autocommit):
         print(e)
         return False
 
-def get_record_info(cursor) -> list:
-        print('Building_record_info_out_tables: ')
-        recordInfo = list()
-        #record_info_out = Sdk.RecordInfo(self.alteryx_engine)  # A fresh record info object for outgoing records.
-        try:  # Add metadata info that is passed to tools downstream.
-            for row in cursor.description:
-                recordInfo.append(row[0])
-        except Exception as e:
-            print('Building_record_info_out_tables failed. {}}'.format(str(e)))
-        return recordInfo               
+def get_record_info(cursor) -> dict:
+    print('Building_record_info_out_tables: ')
+    recordInfo = list()
+    #record_info_out = Sdk.RecordInfo(self.alteryx_engine)  # A fresh record info object for outgoing records.
+    try:  # Add metadata info that is passed to tools downstream.
+        for row in cursor.description:
+            recordInfo.append(row[0])
+    except Exception as e:
+        print('Building_record_info_out_tables failed. {}}'.format(str(e)))
+    return dict(zip(recordInfo,range(len(recordInfo))))               
 
 def get_tables(cursor) -> list:
     start = datetime.datetime.now()
@@ -78,6 +80,52 @@ def getTableType(type) -> str:
     return False    
 
 
+def get_tables_many(cursor, tgt_cursor):
+    start = datetime.datetime.now()
+    table = list()
+    dataIn = list()
+    dataOut = list()
+
+    # Init tables cursor
+    try:
+        TABLES = cursor.tables(table=None, catalog=None, schema=None, tableType=None)
+    except Exception as e:
+        print('Cannot open SOURCE cursor. {}'.format(str(e))) 
+
+    recordInfo = get_record_info(cursor)
+    #fieldNamesDict = dict(zip(fieldNames,range(len(fieldNames))))
+    #print(fieldNames)
+    #print(fieldNamesDict)
+
+    while True:
+        print('ITERATION')
+        try:
+            dataIn = TABLES.fetchmany(BATCH_SIZE)
+            if not dataIn:
+                break
+        except Exception as e:
+            print('Load table MANY failed. {}'.format(str(e)))
+            return False
+    
+        for row in dataIn:
+            dataOut = list()
+            dataOutRow = list()
+            # insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name)
+            dataOutRow.extend([LOAD_ID, str(calendar.timegm(datetime.datetime.now().timetuple())), ENGINE, SERVER_NAME])
+            dataOutRow.extend([row[recordInfo['table_name']], getTableType(row[recordInfo['table_type']]), row[recordInfo['remarks']], 'def', row[recordInfo['table_schem']]])
+            dataOut.append(dataOutRow)
+            print(dataOutRow)
+        tgt_cursor.executemany("insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", dataOut)
+
+
+    end = datetime.datetime.now()
+    print('Get many tables data took: {}'.format(str(end - start)))  
+    #print(dataIn)
+
+
+
+
+
 ##################################################
 # MAIN
 ##################################################
@@ -90,7 +138,10 @@ TGT_CURSOR = init_cursor(TGT_CONSTR, TGT_AUTOCOMMIT)
 # fieldNames = get_record_info(CURSOR)
 
 # Get All Tables Data
-dataIn = get_tables(SRC_CURSOR)
+#dataIn = get_tables(SRC_CURSOR)
+
+get_tables_many(SRC_CURSOR, TGT_CURSOR)
+
 
 """
 print('FIELD NAMES:')
@@ -98,7 +149,7 @@ print(fieldNames)
 print('RESULT DATA:')
 print(str(dataOut))
 """
-
+"""
 TGT_CURSOR.execute("delete from rdbms_stage.db_tables where loadid = '{}'".format(LOAD_ID))
 
 timestamp = calendar.timegm(datetime.datetime.now().timetuple())
@@ -116,10 +167,10 @@ for row in dataIn:
     TGT_CURSOR.execute(sqlQuery)
 
 TGT_CURSOR.execute('commit')
-asdasdasdasdasdasdsadadasdasdsadasdadsasdasdasdasdsasad
+
 SRC_CURSOR.close()
 TGT_CURSOR.close()
-
+"""
 
 
 
