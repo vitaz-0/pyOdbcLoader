@@ -4,6 +4,7 @@ import calendar
 
 
 SRC_CONSTR = 'Driver={MySQL ODBC 5.3 Unicode Driver};DATABASE=employees;Server=localhost;Option=3;Port=3306;UID=vzak;PWD=Pra1234gue'
+#SRC_CONSTR = 'Driver={PostgreSQL Unicode(x64)};Servername=postgresql.alteryx-loaders.cloud;Port=5432;Database=postgres'
 SRC_AUTOCOMMIT = True
 
 TGT_CONSTR = 'DRIVER={PostgreSQL Unicode(x64)};DATABASE=ngp;UID=ngp;PWD=wombat-wookie-charleston;SERVER=localhost;PORT=5431'
@@ -15,7 +16,7 @@ BATCH_SIZE = 2
 
 INSERT_STATEMENTS = {
     "tables": "insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    "columns": ""
+    "columns": "INSERT INTO rdbms_stage.db_columns (loadid, tstamp, engine_name, server_name, catalog_name, schema_name, table_name, column_name, is_nullable, column_default, data_type) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 RDBMS_STAGE_TABLES = {
@@ -62,40 +63,7 @@ def get_record_info(cursor) -> dict:
         print('Building_record_info_out_tables failed. {}}'.format(str(e)))
     return dict(zip(recordInfo,range(len(recordInfo))))               
 
-def get_tables(cursor) -> list:
-    start = datetime.datetime.now()
-    table = list()
-    dataOut = list()
-
-    # Init tables cursor
-    """
-    try:
-        TABLES = cursor.tables(table=None, catalog=None, schema=None, tableType=None)
-    except Exception as e:
-        print('Cannot open cursor. {}'.format(str(e)))
-    """
-    tables = init_src_cursor_query(cursor.tables(table=None, catalog=None, schema=None, tableType=None))
-
-    while table is not None:
-        try:
-            table = tables.fetchone()
-            currentRow = list()
-            if table is not None:
-                for i in range(0,len(table)):
-                    currentRow.append(str(table[i])) 
-                dataOut.append(currentRow)    
-                #print(dataOut)
-                #currentRow.clear()
-                
-        except Exception as e:
-            print('Load table failed. {}'.format(str(e)))
-            return False
-
-    end = datetime.datetime.now()
-    print('Get all tables data took: @1', str(end - start))
-    return dataOut
-
-def getTableType(type) -> str:
+def get_table_type(type) -> str:
     if type == 'TABLE':
         return 'T'
     if type == 'VIEW':
@@ -104,7 +72,22 @@ def getTableType(type) -> str:
         return 'P'    
     return False    
 
-def data_extract_transform(cursor):    
+def get_is_nullable(isNullable) -> str:
+    if isNullable.upper() == 'YES':
+        return True
+    if isNullable.upper() == '1':
+        return True    
+    if isNullable.upper() == 'Y':
+        return True    
+    if isNullable.upper() == 'NO':
+        return False
+    if isNullable.upper() == 'N':
+        return False  
+    if isNullable.upper() == '0':
+        return False 
+    return True   
+
+def data_extract(cursor):    
     try:
         dataIn = cursor.fetchmany(BATCH_SIZE)
         if not dataIn:
@@ -121,32 +104,51 @@ def data_transform_tables(dataIn, recordInfo):
             dataOutRow = list()
             # insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name)
             dataOutRow.extend([LOAD_ID, str(calendar.timegm(datetime.datetime.now().timetuple())), ENGINE, SERVER_NAME])
-            dataOutRow.extend([row[recordInfo['table_name']], getTableType(row[recordInfo['table_type']]), row[recordInfo['remarks']], 'def', row[recordInfo['table_schem']]])
+            dataOutRow.extend([row[recordInfo['table_name']], get_table_type(row[recordInfo['table_type']]), row[recordInfo['remarks']], 'def', row[recordInfo['table_schem']]])
             dataOut.append(dataOutRow)
-            # print(dataOutRow)
+            #print(dataOutRow)
+            #print(dataOut)
     except Exception as e:
         print('Method data_transform_tables FAILED. {}'.format(str(e)))
         return False    
-
     return dataOut    
 
 def data_transform_columns(dataIn, recordInfo):
     dataOut = list()
-    return dataOut  
+    try:
+        for row in dataIn:
+            dataOutRow = list()
+            #schema =  row[recordInfo['table_schem']]
+            #SELECT table_catalog, table_schema, table_name, column_name, column_default, is_nullable, data_type  FROM information_schema.columns
+            # INSERT INTO rdbms_stage.db_columns (loadid, tstamp, engine_name, server_name, catalog_name, schema_name, table_name, column_name, is_nullable, column_default, data_type)
+            dataOutRow.extend([LOAD_ID, str(calendar.timegm(datetime.datetime.now().timetuple())), ENGINE, SERVER_NAME])
+            dataOutRow.extend([row[recordInfo['table_catalog']], row[recordInfo['table_schema']], row[recordInfo['table_name']], row[recordInfo['column_name']], get_is_nullable(row[recordInfo['is_nullable']]), row[recordInfo['column_default']], row[recordInfo['data_type']]])
+            #dataOutRow.extend([row[recordInfo['ordinal_position']], row[recordInfo['num_prec_radix']], row[recordInfo['decimal_digits']], row[recordInfo['char_octet_length']], row[recordInfo['remarks']]])
+            dataOut.append(dataOutRow)
+            #print(dataOutRow)
+            #print(dataOut)
+            #print(row)
+    except Exception as e:
+        print('Method data_transform_columns FAILED. {}'.format(str(e)))
+        return False    
+    return dataOut     
 
 def data_load(cursor, dataOut:list, loadType:str):
     try:
         cursor.executemany(INSERT_STATEMENTS[loadType], dataOut)
     except Exception as e:
-        print('Method data_transform_tables FAILED. {}'.format(str(e)))    
+        print('Method data_transform_columns FAILED. {}'.format(str(e)))    
 
 def data_etl_rollback(src_cursor, tgt_cursor):
     try:
-        cursor.executemany(INSERT_STATEMENTS[loadType], dataOut)
+        src_cursor.close()
+        if tgt_cursor == None:
+            tgt_cursor.execute('rollback')
+            tgt_cursor.close()
     except Exception as e:
         print('Rollback FAILED. {}'.format(str(e)))
 
-def data_etl(src_cursor, tgt_cursor, loadType:str):
+def data_etl(src_cursor_method, tgt_cursor, loadType:str):
 
     dataIn = list()
     dataOut = list()
@@ -154,15 +156,15 @@ def data_etl(src_cursor, tgt_cursor, loadType:str):
     start = datetime.datetime.now()
 
     try:
-        tables, recordInfo = init_src_cursor_query(src_cursor.tables(table=None, catalog=None, schema=None, tableType=None))
-        
+        dataInCursor, recordInfo = init_src_cursor_query(src_cursor_method)
+
         # Cleanup target rdbms stage table
         tgt_cursor.execute("delete from rdbms_stage.{} where loadid = '{}'".format(RDBMS_STAGE_TABLES[loadType],LOAD_ID)) # table name
         
         while True:
             dataOut = list()
 
-            dataIn = data_extract_transform(tables)
+            dataIn = data_extract(dataInCursor)
             if not dataIn:
                 break
             
@@ -171,8 +173,11 @@ def data_etl(src_cursor, tgt_cursor, loadType:str):
             if loadType == 'columns':
                 dataOut = data_transform_columns(dataIn, recordInfo)
 
-            print('DATA OUT: ')
-            print(dataOut)
+            if dataOut == False:
+                break
+
+            #print('DATA OUT: ')
+            #print(dataOut)
             data_load(tgt_cursor, dataOut, loadType)
 
         tgt_cursor.execute('commit')
@@ -181,11 +186,8 @@ def data_etl(src_cursor, tgt_cursor, loadType:str):
         print('process data_etl finished. Getting {} data took: {}'.format(loadType.upper(), str(end - start)))  
     
     except Exception as e:
-        print('Process data_etl failed. Processing ROLLBACK')
-        data_etl_rollback(tgt_cursor)
-        src_cursor.close()
-        tgt_cursor.close()
-
+        print('Process data_etl failed. Processing ROLLBACK. {}'.format(str(e)))
+        data_etl_rollback(src_cursor_method, tgt_cursor)
 
 ##################################################
 # MAIN
@@ -195,9 +197,9 @@ LOAD_ID = 'pyTest'+'_'+ENGINE
 SRC_CURSOR = init_cursor(SRC_CONSTR, SRC_AUTOCOMMIT) # add: TABLES
 TGT_CURSOR = init_cursor(TGT_CONSTR, TGT_AUTOCOMMIT)
 
-data_etl(SRC_CURSOR, TGT_CURSOR, 'tables') 
-#data_etl(SRC_CURSOR, TGT_CURSOR, 'columns') 
-
+data_etl(SRC_CURSOR.tables(table=None, catalog=None, schema=None, tableType=None), TGT_CURSOR, 'tables') 
+# Takhle by to bylo pres COLUMNS: data_etl(SRC_CURSOR.columns(table=None, catalog=None, schema=None, column=None), TGT_CURSOR, 'columns') 
+data_etl(SRC_CURSOR.execute('SELECT table_catalog, table_schema, table_name, column_name, column_default, is_nullable, data_type  FROM information_schema.columns'), TGT_CURSOR, 'columns')
 SRC_CURSOR.close()
 TGT_CURSOR.close()
 
