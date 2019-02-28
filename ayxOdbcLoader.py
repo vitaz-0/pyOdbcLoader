@@ -29,6 +29,17 @@ def init_cursor(constr, autocommit):
         print(e)
         return False
 
+def init_src_cursor_query(cursorMethod):    
+    try:
+        retCursor = cursorMethod
+    except Exception as e:
+        print('Cannot open SOURCE cursor. {}'.format(str(e))) 
+    try:
+        recordInfo = get_record_info(retCursor)
+    except Exception as e:
+        print('Cannot get record info. {}'.format(str(e)))     
+    return retCursor, recordInfo
+
 def get_record_info(cursor) -> dict:
     print('Building_record_info_out_tables: ')
     recordInfo = list()
@@ -46,10 +57,13 @@ def get_tables(cursor) -> list:
     dataOut = list()
 
     # Init tables cursor
+    """
     try:
         TABLES = cursor.tables(table=None, catalog=None, schema=None, tableType=None)
     except Exception as e:
         print('Cannot open cursor. {}'.format(str(e)))
+    """
+    init_src_cursor_query(cursor.tables(table=None, catalog=None, schema=None, tableType=None))
 
     while table is not None:
         try:
@@ -93,12 +107,8 @@ def get_tables_many(cursor, tgt_cursor):
         print('Cannot open SOURCE cursor. {}'.format(str(e))) 
 
     recordInfo = get_record_info(cursor)
-    #fieldNamesDict = dict(zip(fieldNames,range(len(fieldNames))))
-    #print(fieldNames)
-    #print(fieldNamesDict)
 
     while True:
-        print('ITERATION')
         try:
             dataIn = TABLES.fetchmany(BATCH_SIZE)
             if not dataIn:
@@ -108,14 +118,17 @@ def get_tables_many(cursor, tgt_cursor):
             return False
     
         for row in dataIn:
-            dataOut = list()
+            #dataOut = list()
             dataOutRow = list()
             # insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name)
             dataOutRow.extend([LOAD_ID, str(calendar.timegm(datetime.datetime.now().timetuple())), ENGINE, SERVER_NAME])
             dataOutRow.extend([row[recordInfo['table_name']], getTableType(row[recordInfo['table_type']]), row[recordInfo['remarks']], 'def', row[recordInfo['table_schem']]])
             dataOut.append(dataOutRow)
             print(dataOutRow)
-        tgt_cursor.executemany("insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", dataOut)
+        
+    print('DATAOUT:')
+    print(dataOut)
+    tgt_cursor.executemany("insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", dataOut)
 
 
     end = datetime.datetime.now()
@@ -131,7 +144,7 @@ def get_tables_many(cursor, tgt_cursor):
 ##################################################
 ENGINE = 'mysql'
 LOAD_ID = 'pyTest'+'_'+ENGINE
-SRC_CURSOR = init_cursor(SRC_CONSTR, SRC_AUTOCOMMIT)
+SRC_CURSOR = init_cursor(SRC_CONSTR, SRC_AUTOCOMMIT) # add: TABLES
 TGT_CURSOR = init_cursor(TGT_CONSTR, TGT_AUTOCOMMIT)
 
 # Get tables meta field names
@@ -139,8 +152,21 @@ TGT_CURSOR = init_cursor(TGT_CONSTR, TGT_AUTOCOMMIT)
 
 # Get All Tables Data
 #dataIn = get_tables(SRC_CURSOR)
+TGT_CURSOR.execute("delete from rdbms_stage.db_tables where loadid = '{}'".format(LOAD_ID)) # table name
+get_tables_many(SRC_CURSOR, TGT_CURSOR) # cursor -> tables, columns
+TGT_CURSOR.execute('commit')
+SRC_CURSOR.close()
+TGT_CURSOR.close()
 
-get_tables_many(SRC_CURSOR, TGT_CURSOR)
+
+
+
+
+
+
+
+
+
 
 
 """
