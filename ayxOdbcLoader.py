@@ -13,6 +13,17 @@ SERVER_NAME = 'localhost'
 
 BATCH_SIZE = 2
 
+INSERT_STATEMENTS = {
+    "tables": "insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "columns": ""
+}
+
+RDBMS_STAGE_TABLES = {
+    "tables": "db_tables",
+    "columns": "db_columns"
+}
+
+
 def init_cursor(constr, autocommit):
     try:
         conn = pyodbc.connect(constr,autocommit=autocommit)
@@ -41,7 +52,7 @@ def init_src_cursor_query(cursorMethod):
     return retCursor, recordInfo
 
 def get_record_info(cursor) -> dict:
-    print('Building_record_info_out_tables: ')
+    #print('Building_record_info_out_tables: ')
     recordInfo = list()
     #record_info_out = Sdk.RecordInfo(self.alteryx_engine)  # A fresh record info object for outgoing records.
     try:  # Add metadata info that is passed to tools downstream.
@@ -63,11 +74,11 @@ def get_tables(cursor) -> list:
     except Exception as e:
         print('Cannot open cursor. {}'.format(str(e)))
     """
-    init_src_cursor_query(cursor.tables(table=None, catalog=None, schema=None, tableType=None))
+    tables = init_src_cursor_query(cursor.tables(table=None, catalog=None, schema=None, tableType=None))
 
     while table is not None:
         try:
-            table = TABLES.fetchone()
+            table = tables.fetchone()
             currentRow = list()
             if table is not None:
                 for i in range(0,len(table)):
@@ -93,50 +104,87 @@ def getTableType(type) -> str:
         return 'P'    
     return False    
 
-
-def get_tables_many(cursor, tgt_cursor):
-    start = datetime.datetime.now()
-    table = list()
-    dataIn = list()
-    dataOut = list()
-
-    # Init tables cursor
+def data_extract_transform(cursor):    
     try:
-        TABLES = cursor.tables(table=None, catalog=None, schema=None, tableType=None)
+        dataIn = cursor.fetchmany(BATCH_SIZE)
+        if not dataIn:
+            return None
     except Exception as e:
-        print('Cannot open SOURCE cursor. {}'.format(str(e))) 
+        print('Method data_extract_transform FAILED. {}'.format(str(e)))
+        return False
+    return dataIn   
 
-    recordInfo = get_record_info(cursor)
-
-    while True:
-        try:
-            dataIn = TABLES.fetchmany(BATCH_SIZE)
-            if not dataIn:
-                break
-        except Exception as e:
-            print('Load table MANY failed. {}'.format(str(e)))
-            return False
-    
+def data_transform_tables(dataIn, recordInfo):
+    dataOut = list()
+    try:
         for row in dataIn:
-            #dataOut = list()
             dataOutRow = list()
             # insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name)
             dataOutRow.extend([LOAD_ID, str(calendar.timegm(datetime.datetime.now().timetuple())), ENGINE, SERVER_NAME])
             dataOutRow.extend([row[recordInfo['table_name']], getTableType(row[recordInfo['table_type']]), row[recordInfo['remarks']], 'def', row[recordInfo['table_schem']]])
             dataOut.append(dataOutRow)
-            print(dataOutRow)
+            # print(dataOutRow)
+    except Exception as e:
+        print('Method data_transform_tables FAILED. {}'.format(str(e)))
+        return False    
+
+    return dataOut    
+
+def data_transform_columns(dataIn, recordInfo):
+    dataOut = list()
+    return dataOut  
+
+def data_load(cursor, dataOut:list, loadType:str):
+    try:
+        cursor.executemany(INSERT_STATEMENTS[loadType], dataOut)
+    except Exception as e:
+        print('Method data_transform_tables FAILED. {}'.format(str(e)))    
+
+def data_etl_rollback(src_cursor, tgt_cursor):
+    try:
+        cursor.executemany(INSERT_STATEMENTS[loadType], dataOut)
+    except Exception as e:
+        print('Rollback FAILED. {}'.format(str(e)))
+
+def data_etl(src_cursor, tgt_cursor, loadType:str):
+
+    dataIn = list()
+    dataOut = list()
+
+    start = datetime.datetime.now()
+
+    try:
+        tables, recordInfo = init_src_cursor_query(src_cursor.tables(table=None, catalog=None, schema=None, tableType=None))
         
-    print('DATAOUT:')
-    print(dataOut)
-    tgt_cursor.executemany("insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", dataOut)
+        # Cleanup target rdbms stage table
+        tgt_cursor.execute("delete from rdbms_stage.{} where loadid = '{}'".format(RDBMS_STAGE_TABLES[loadType],LOAD_ID)) # table name
+        
+        while True:
+            dataOut = list()
 
+            dataIn = data_extract_transform(tables)
+            if not dataIn:
+                break
+            
+            if loadType == 'tables':
+                dataOut = data_transform_tables(dataIn, recordInfo)    
+            if loadType == 'columns':
+                dataOut = data_transform_columns(dataIn, recordInfo)
 
-    end = datetime.datetime.now()
-    print('Get many tables data took: {}'.format(str(end - start)))  
-    #print(dataIn)
+            print('DATA OUT: ')
+            print(dataOut)
+            data_load(tgt_cursor, dataOut, loadType)
 
-
-
+        tgt_cursor.execute('commit')
+        
+        end = datetime.datetime.now()
+        print('process data_etl finished. Getting {} data took: {}'.format(loadType.upper(), str(end - start)))  
+    
+    except Exception as e:
+        print('Process data_etl failed. Processing ROLLBACK')
+        data_etl_rollback(tgt_cursor)
+        src_cursor.close()
+        tgt_cursor.close()
 
 
 ##################################################
@@ -147,16 +195,14 @@ LOAD_ID = 'pyTest'+'_'+ENGINE
 SRC_CURSOR = init_cursor(SRC_CONSTR, SRC_AUTOCOMMIT) # add: TABLES
 TGT_CURSOR = init_cursor(TGT_CONSTR, TGT_AUTOCOMMIT)
 
-# Get tables meta field names
-# fieldNames = get_record_info(CURSOR)
+data_etl(SRC_CURSOR, TGT_CURSOR, 'tables') 
+#data_etl(SRC_CURSOR, TGT_CURSOR, 'columns') 
 
-# Get All Tables Data
-#dataIn = get_tables(SRC_CURSOR)
-TGT_CURSOR.execute("delete from rdbms_stage.db_tables where loadid = '{}'".format(LOAD_ID)) # table name
-get_tables_many(SRC_CURSOR, TGT_CURSOR) # cursor -> tables, columns
-TGT_CURSOR.execute('commit')
 SRC_CURSOR.close()
 TGT_CURSOR.close()
+
+
+
 
 
 
