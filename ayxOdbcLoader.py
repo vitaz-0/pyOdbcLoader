@@ -2,18 +2,6 @@ import pyodbc
 import datetime
 import calendar
 
-
-SRC_CONSTR = 'Driver={MySQL ODBC 5.3 Unicode Driver};DATABASE=employees;Server=localhost;Option=3;Port=3306;UID=vzak;PWD=Pra1234gue'
-#SRC_CONSTR = 'Driver={PostgreSQL Unicode(x64)};Servername=postgresql.alteryx-loaders.cloud;Port=5432;Database=postgres'
-SRC_AUTOCOMMIT = True
-
-TGT_CONSTR = 'DRIVER={PostgreSQL Unicode(x64)};DATABASE=ngp;UID=ngp;PWD=wombat-wookie-charleston;SERVER=localhost;PORT=5431'
-TGT_AUTOCOMMIT = False
-
-SERVER_NAME = 'localhost'
-
-BATCH_SIZE = 2
-
 INSERT_STATEMENTS = {
     "tables": "insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     "columns": "INSERT INTO rdbms_stage.db_columns (loadid, tstamp, engine_name, server_name, catalog_name, schema_name, table_name, column_name, is_nullable, column_default, data_type) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -25,6 +13,15 @@ RDBMS_STAGE_TABLES = {
 }
 
 
+##SRC_CONSTR = 'Driver={MySQL ODBC 5.3 Unicode Driver};DATABASE=employees;Server=localhost;Option=3;Port=3306;UID=vzak;PWD=Pra1234gue'
+#SRC_CONSTR = 'Driver={PostgreSQL Unicode(x64)};Servername=postgresql.alteryx-loaders.cloud;Port=5432;Database=postgres'
+SRC_AUTOCOMMIT = True
+
+TGT_CONSTR = 'DRIVER={PostgreSQL Unicode(x64)};DATABASE=ngp;UID=ngp;PWD=wombat-wookie-charleston;SERVER=localhost;PORT=5431'
+TGT_AUTOCOMMIT = False
+SERVER_NAME = 'localhost'
+BATCH_SIZE = 100
+
 def init_cursor(constr, autocommit):
     try:
         conn = pyodbc.connect(constr,autocommit=autocommit)
@@ -33,7 +30,7 @@ def init_cursor(constr, autocommit):
         conn.setdecoding(pyodbc.SQL_WMETADATA, encoding='utf-16le')
         conn.setencoding(encoding='utf-16le')
     except Exception as e:
-           print('Cannot connect to host. {}'.format(str(e)))
+        print('Cannot connect to host. {}'.format(str(e)))
     try:
         cursor = conn.cursor()
         return cursor
@@ -41,11 +38,11 @@ def init_cursor(constr, autocommit):
         print(e)
         return False
 
-def init_src_cursor_query(cursorMethod):    
+def init_cursor_method(cursorMethod):    
     try:
         retCursor = cursorMethod
     except Exception as e:
-        print('Cannot open SOURCE cursor. {}'.format(str(e))) 
+        print('Cannot open cursor. {}'.format(str(e))) 
     try:
         recordInfo = get_record_info(retCursor)
     except Exception as e:
@@ -118,7 +115,6 @@ def data_transform_columns(dataIn, recordInfo):
     try:
         for row in dataIn:
             dataOutRow = list()
-            #schema =  row[recordInfo['table_schem']]
             #SELECT table_catalog, table_schema, table_name, column_name, column_default, is_nullable, data_type  FROM information_schema.columns
             # INSERT INTO rdbms_stage.db_columns (loadid, tstamp, engine_name, server_name, catalog_name, schema_name, table_name, column_name, is_nullable, column_default, data_type)
             dataOutRow.extend([LOAD_ID, str(calendar.timegm(datetime.datetime.now().timetuple())), ENGINE, SERVER_NAME])
@@ -156,7 +152,7 @@ def data_etl(src_cursor_method, tgt_cursor, loadType:str):
     start = datetime.datetime.now()
 
     try:
-        dataInCursor, recordInfo = init_src_cursor_query(src_cursor_method)
+        dataInCursor, recordInfo = init_cursor_method(src_cursor_method)
 
         # Cleanup target rdbms stage table
         tgt_cursor.execute("delete from rdbms_stage.{} where loadid = '{}'".format(RDBMS_STAGE_TABLES[loadType],LOAD_ID)) # table name
@@ -188,65 +184,5 @@ def data_etl(src_cursor_method, tgt_cursor, loadType:str):
     except Exception as e:
         print('Process data_etl failed. Processing ROLLBACK. {}'.format(str(e)))
         data_etl_rollback(src_cursor_method, tgt_cursor)
-
-##################################################
-# MAIN
-##################################################
-ENGINE = 'mysql'
-LOAD_ID = 'pyTest'+'_'+ENGINE
-SRC_CURSOR = init_cursor(SRC_CONSTR, SRC_AUTOCOMMIT) # add: TABLES
-TGT_CURSOR = init_cursor(TGT_CONSTR, TGT_AUTOCOMMIT)
-
-data_etl(SRC_CURSOR.tables(table=None, catalog=None, schema=None, tableType=None), TGT_CURSOR, 'tables') 
-# Takhle by to bylo pres COLUMNS: data_etl(SRC_CURSOR.columns(table=None, catalog=None, schema=None, column=None), TGT_CURSOR, 'columns') 
-data_etl(SRC_CURSOR.execute('SELECT table_catalog, table_schema, table_name, column_name, column_default, is_nullable, data_type  FROM information_schema.columns'), TGT_CURSOR, 'columns')
-SRC_CURSOR.close()
-TGT_CURSOR.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-"""
-print('FIELD NAMES:')
-print(fieldNames)
-print('RESULT DATA:')
-print(str(dataOut))
-"""
-"""
-TGT_CURSOR.execute("delete from rdbms_stage.db_tables where loadid = '{}'".format(LOAD_ID))
-
-timestamp = calendar.timegm(datetime.datetime.now().timetuple())
-
-for row in dataIn:
-    sql = list()
-    sql.append("insert into rdbms_stage.db_tables (loadid, tstamp, engine_name, server_name, table_name, table_type, table_comment, catalog_name, schema_name) values (")
-    sql.append("'{0}',{1},'{2}','{3}',".format(LOAD_ID,str(timestamp),ENGINE,SERVER_NAME))
-    sql.append("'{0}','{1}','{2}','{3}','{4}'".format(row[2],getTableType(row[3]),row[4],'def',row[0]))
-    sql.append(")")
-    
-    sqlQuery = ''.join(sql)
-    print(sqlQuery)
-
-    TGT_CURSOR.execute(sqlQuery)
-
-TGT_CURSOR.execute('commit')
-
-SRC_CURSOR.close()
-TGT_CURSOR.close()
-"""
-
-
-
 
 
